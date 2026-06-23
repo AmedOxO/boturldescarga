@@ -1,7 +1,9 @@
+import os
+import threading
 import logging
 import sqlite3
-import os
 from datetime import datetime
+from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 import sys
@@ -13,11 +15,37 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-TOKEN = '8838129848:AAEoYT1heMVSn-PIBrT_WwHaZnDMvvAZ74A'
+# ⚠️ IMPORTANTE: Usar variable de entorno para el token
+TOKEN = os.environ.get('TELEGRAM_TOKEN')
+if not TOKEN:
+    logger.error("❌ TELEGRAM_TOKEN no configurado en variables de entorno")
+    print("""
+    ⚠️ ERROR: No se encontró el TOKEN
+    ====================================
+    Para ejecutar localmente:
+    set TELEGRAM_TOKEN=tu_token_aqui
+    python bot.py
+    
+    Para Render:
+    Agrega TELEGRAM_TOKEN en Environment Variables
+    ====================================
+    """)
+    sys.exit(1)
 
-# Crear carpeta para descargas
-if not os.path.exists('descargas'):
-    os.makedirs('descargas')
+# --- FLASK PARA RENDER ---
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "🤖 Bot de Telegram está funcionando!"
+
+@app.route('/health')
+def health():
+    return "OK", 200
+
+@app.route('/status')
+def status():
+    return {"status": "running", "token": TOKEN[:10] + "..."}
 
 # --- BASE DE DATOS ---
 def init_db():
@@ -43,7 +71,6 @@ def guardar_archivo(user_id, file_id, file_name, file_type, file_size):
                  VALUES (?, ?, ?, ?, ?, ?)''',
               (user_id, file_id, file_name, file_type, file_size, fecha))
     conn.commit()
-    # Obtener el ID del registro insertado
     registro_id = c.lastrowid
     conn.close()
     return registro_id
@@ -74,16 +101,6 @@ def obtener_archivo_por_id(user_id, registro_id):
     c.execute('''SELECT file_name, file_type, file_id FROM archivos 
                  WHERE user_id = ? AND id = ?''',
               (user_id, registro_id))
-    resultado = c.fetchone()
-    conn.close()
-    return resultado
-
-def obtener_archivo_por_file_id(user_id, file_id):
-    conn = sqlite3.connect('archivos.db')
-    c = conn.cursor()
-    c.execute('''SELECT id, file_name, file_type, file_id FROM archivos 
-                 WHERE user_id = ? AND file_id = ?''',
-              (user_id, file_id))
     resultado = c.fetchone()
     conn.close()
     return resultado
@@ -203,7 +220,6 @@ async def list_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             size_str = "desconocido"
         
-        # Usar el ID numérico de la base de datos para los botones
         keyboard = [
             [
                 InlineKeyboardButton("📥 Descargar", callback_data=f'down_{id_reg}'),
@@ -310,8 +326,6 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         file_id = file.file_id
-        
-        # Guardar en la base de datos y obtener el ID numérico
         registro_id = guardar_archivo(user_id, file_id, nombre, file_type, file_size)
         
         if file_size < 1024:
@@ -321,7 +335,6 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             size_str = f"{file_size / (1024 * 1024):.1f} MB"
         
-        # Usar el ID numérico para los botones
         keyboard = [
             [InlineKeyboardButton("📥 Descargar", callback_data=f'down_{registro_id}')],
             [InlineKeyboardButton("📂 Ver mis archivos", callback_data='list')],
@@ -523,7 +536,6 @@ Los archivos se guardan en la nube de Telegram
         )
         await query.message.delete()
     
-    # DESCARGAR - Usa el ID numérico
     elif data.startswith('down_'):
         try:
             registro_id = int(data.replace('down_', ''))
@@ -597,7 +609,6 @@ Los archivos se guardan en la nube de Telegram
                 parse_mode='Markdown'
             )
     
-    # ELIMINAR - Usa el ID numérico
     elif data.startswith('del_'):
         try:
             registro_id = int(data.replace('del_', ''))
@@ -619,8 +630,9 @@ Los archivos se guardan en la nube de Telegram
                 parse_mode='Markdown'
             )
 
-# --- FUNCION PRINCIPAL ---
-def main():
+# --- FUNCION DEL BOT (para ejecutar en hilo) ---
+def run_bot():
+    """Ejecuta el bot de Telegram en un hilo separado"""
     try:
         init_db()
         
@@ -639,42 +651,32 @@ def main():
         ))
         application.add_handler(CallbackQueryHandler(button_callback))
         
+        logger.info("🤖 Bot iniciado correctamente en hilo separado")
         print("\n" + "="*60)
         print("🤖 BOT DE TELEGRAM MEJORADO")
         print("="*60)
         print("📁 Base de datos: archivos.db")
-        print("📂 Carpeta descargas: descargas/")
         print("📋 Comandos: /start, /menu, /list, /ayuda, /eliminar")
         print("="*60)
-        print("💡 Los archivos se guardan en la nube de Telegram")
-        print("💡 Ahora usa IDs numéricos para los botones")
-        print("="*60)
-        print("Presiona Ctrl+C para detener.")
+        print("✅ Bot corriendo en hilo separado")
+        print("🌐 Servidor Flask en: http://0.0.0.0:5000")
         print("="*60 + "\n")
         
         application.run_polling(
             allowed_updates=Update.ALL_TYPES,
             drop_pending_updates=True
         )
-            
-    except KeyboardInterrupt:
-        print("\n👋 Bot detenido por el usuario.")
+        
     except Exception as e:
-        if "Conflict" in str(e):
-            print("\n" + "="*60)
-            print("⚠️ CONFLICTO DETECTADO")
-            print("="*60)
-            print("Cerrando todas las instancias...")
-            os.system("taskkill /F /IM python.exe 2>nul")
-            print("Espera 3 segundos...")
-            import time
-            time.sleep(3)
-            print("Reiniciando el bot...")
-            os.system("python bot.py")
-            print("="*60)
-        else:
-            logger.error(f"Error fatal: {e}")
-            sys.exit(1)
+        logger.error(f"Error en el bot: {e}")
 
+# --- MAIN ---
 if __name__ == '__main__':
-    main()
+    # Iniciar el bot en un hilo separado
+    bot_thread = threading.Thread(target=run_bot, daemon=True)
+    bot_thread.start()
+    
+    # Iniciar el servidor Flask (para Render)
+    port = int(os.environ.get("PORT", 5000))
+    print(f"🌐 Iniciando servidor web en el puerto {port}")
+    app.run(host="0.0.0.0", port=port)
